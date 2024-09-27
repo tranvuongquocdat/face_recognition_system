@@ -19,7 +19,7 @@ class Facenet:
         print('Running on device: {}'.format(self.device))
 
         self.mtcnn = MTCNN(image_size=160, margin=0, min_face_size=20,
-                           thresholds=[0.6, 0.7, 0.7], factor=0.709, post_process=True,
+                           thresholds=[0.6, 0.7, 0.7], factor=0.709, post_process=True, keep_all=True,
                            device=self.device)
 
         self.resnet = InceptionResnetV1(pretrained=self.pretrained).eval().to(self.device)
@@ -36,6 +36,7 @@ class Facenet:
             for idx, (img, _) in enumerate(loader):
                 img_aligned, prob = self.mtcnn(img, return_prob=True)
                 if img_aligned is not None:
+                    img_aligned = img_aligned[0]  # Remove any extra dimension (the second dimension)
                     aligned.append(img_aligned)
                     
                     # Get relative image path in form {user_folder}/{img_file}
@@ -50,27 +51,39 @@ class Facenet:
             # Convert to NumPy array
             self.embeddings_np = embeddings.numpy()
 
-    def find(self, frame_rgb, threshold = 0.6):
+    def find(self, frame_rgb, threshold=0.6):
         frame_pil = Image.fromarray(frame_rgb)
-        frame_aligned, frame_prob = self.mtcnn(frame_pil, return_prob=True)
-    
-        if frame_aligned is not None and len(self.names) > 0:
-            # Compute the embedding of the face
-            frame_aligned = frame_aligned.unsqueeze(0).to(self.device)
-            frame_embedding = self.resnet(frame_aligned).detach().to('cpu').numpy()
-            # Compute distances between this frame's embedding and dataset embeddings using NumPy
-            frame_dists = np.linalg.norm(self.embeddings_np - frame_embedding, axis=1)
+        
+        # Sử dụng MTCNN để phát hiện khuôn mặt
+        frames_aligned, frames_prob = self.mtcnn(frame_pil, return_prob=True)
+        
+        # Kiểm tra số lượng khuôn mặt
+        if frames_aligned is not None and len(self.names) > 0:
+            num_faces = len(frames_aligned)
 
-            # Find the closest image
-            min_dist = np.min(frame_dists)
-            min_index = np.argmin(frame_dists)
-            closest_image_name = self.names[min_index]
-            if min_dist < threshold:
-                return closest_image_name, min_dist
-            else:
-                return '',''
-            
-        return '', ''
+            # In ra số lượng khuôn mặt
+            # print(f"Số khuôn mặt phát hiện được: {num_faces}")
+        
+            matches = []
+
+            # Lặp qua từng khuôn mặt đã căn chỉnh trong khung hình
+            for frame_aligned in frames_aligned:
+                # Tính embedding cho từng khuôn mặt
+                frame_aligned = frame_aligned.unsqueeze(0).to(self.device)
+                frame_embedding = self.resnet(frame_aligned).detach().to('cpu').numpy()
+                
+                # Tính khoảng cách giữa embedding của khuôn mặt hiện tại và embedding trong cơ sở dữ liệu
+                frame_dists = np.linalg.norm(self.embeddings_np - frame_embedding, axis=1)
+                
+                # Kiểm tra nếu khoảng cách nhỏ hơn ngưỡng và lưu kết quả phù hợp
+                for i, dist in enumerate(frame_dists):
+                    if dist < threshold:
+                        matches.append((self.names[i], dist))
+
+            return matches
+
+        return []
+
     
     # New function to compare two images
     def verify(self, frame1, frame2, threshold=0.6):
@@ -81,6 +94,9 @@ class Facenet:
         # Get aligned faces and probabilities from both frames
         frame1_aligned, _ = self.mtcnn(frame1_pil, return_prob=True)
         frame2_aligned, _ = self.mtcnn(frame2_pil, return_prob=True)
+
+        frame1_aligned = frame1_aligned[0]
+        frame2_aligned = frame2_aligned[0]
 
         if frame1_aligned is not None and frame2_aligned is not None:
             # Compute embeddings for both faces
@@ -103,15 +119,6 @@ class Facenet:
 
 
     def update_embedding(self, new_folder=None):
-        """
-        Update the embeddings by comparing the images in the folder with the stored embeddings.
-        If an image is added, its embedding is computed and added.
-        If an image is removed, its embedding is removed from the list.
-        Also, print the added and removed images.
-        
-        Parameters:
-        - new_folder (str): If provided, this folder will be used instead of self.image_folder.
-        """
         # Use the new folder if provided, otherwise use the default image folder
         folder_to_use = new_folder if new_folder else self.image_folder
         
@@ -158,6 +165,7 @@ class Facenet:
                 user_folder, img_file = img_path.split('/')
                 img = Image.open(os.path.join(folder_to_use, user_folder, img_file))
                 img_aligned, prob = self.mtcnn(img, return_prob=True)
+                img_aligned = img_aligned[0]
                 if img_aligned is not None:
                     aligned.append(img_aligned)
                     self.names.append(img_path)
