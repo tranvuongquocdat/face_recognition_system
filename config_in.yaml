@@ -1,6 +1,6 @@
 database:
   local:
-    path: "sqlite:///local_attendance_tracking.db"  # Đường dẫn tới local database
+    path: r"sqlite:///local_attendance_tracking.db"  # Đường dẫn tới local database
   online:
     user: "hrm"
     password: "hrm"
@@ -20,7 +20,7 @@ image_path:
 camera_name:
   camera: "CAMERA_1"
 
-capture_id: "rtsp://admin:namtiep2005@192.168.1.25:554/Streaming/channels/101"
-# capture_id: 0
+# capture_id: "rtsp://admin:namtiep2005@192.168.1.25:554/Streaming/channels/101"
+capture_id: 0
 
 distance_threshold: 0.6

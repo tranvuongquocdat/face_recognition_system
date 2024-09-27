@@ -574,6 +574,7 @@ class AttendanceCheckingWindow(object):
 
         # Iterate over each record
         for result in results:
+            id = result[0]
             user_id = result[1]  # Access 'user_id' using its index
             images = result[2]   # Access 'images' using its index
 
