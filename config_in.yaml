@@ -1,6 +1,6 @@
 database:
   local:
-    path: r"sqlite:///local_attendance_tracking.db"  # Đường dẫn tới local database
+    path: "sqlite:///local_attendance_tracking.db"  # Đường dẫn tới local database
   online:
     user: "hrm"
     password: "hrm"
