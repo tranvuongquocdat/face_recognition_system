@@ -4,7 +4,8 @@ import pandas as pd
 import cv2
 import base64
 import tempfile
-import uuid
+import yaml 
+import logging
 from PyQt6 import QtWidgets, QtGui
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLineEdit, QPushButton, 
@@ -15,17 +16,27 @@ from PyQt6.QtGui import QColor, QPixmap, QPainter, QFont, QImage, QPen
 from PyQt6.QtCore import Qt, QRect, QTimer, QBuffer, QIODevice
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import sessionmaker
-from deepface import DeepFace
 from facenet_core import Facenet
 
 import warnings
 warnings.filterwarnings("ignore")
 
-user = "hrm"
-password = "hrm"
-host = "35.223.205.197"  
-port = "5432"  
-database = "attendance_tracking"
+logging.basicConfig(level=logging.DEBUG)
+
+def load_config():
+    with open("config_in.yaml", "r") as config_file:
+        config = yaml.safe_load(config_file)
+    return config
+
+# Load config
+config = load_config()
+
+# Access the database config for local and online databases
+user = config['database']['online']['user']
+password = config['database']['online']['password']
+host = config['database']['online']['host']
+port = config['database']['online']['port']
+database = config['database']['online']['database']
 
 # Database connection URI
 DATABASE_URI = f'postgresql://{user}:{password}@{host}:{port}/{database}'
