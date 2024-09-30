@@ -16,6 +16,7 @@ from PyQt6.QtCore import Qt, QRect, QTimer, QBuffer, QIODevice
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import sessionmaker
 from deepface import DeepFace
+from facenet_core import Facenet
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -288,32 +289,28 @@ class EditEmployeeDialog(QDialog):
 
     
     def verify_faces(self):
-        backends = ["opencv", "ssd", "dlib", "mtcnn", "retinaface"]
-        models = ["VGG-Face", "Facenet", "Facenet512", "OpenFace", "DeepFace", "DeepID", "ArcFace", "Dlib", "SFace"]
-
         if all(label.pixmap_image and not label.pixmap_image.isNull() for label in self.image_labels):
             try:
                 temp_files = []
                 results = []
 
-                # save to temp folder
+                # Lưu các ảnh vào thư mục tạm
                 for label in self.image_labels:
                     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
                     label.pixmap_image.save(temp_file.name)
                     temp_files.append(temp_file.name)
 
-                # verify images
+                # Verify logic from the second code
+                facenet = Facenet()
                 for i in range(len(temp_files) - 1):
                     for j in range(i + 1, len(temp_files)):
-                        result = DeepFace.verify(
-                            img1_path=temp_files[i],
-                            img2_path=temp_files[j],
-                            model_name=models[2],
-                            detector_backend=backends[1],
-                            threshold=0.6,
-                            enforce_detection=False
-                        )
-                        results.append(result['verified'])
+                        img1 = cv2.imread(temp_files[i])
+                        img2 = cv2.imread(temp_files[j])
+
+                        if facenet.verify(img1, img2):
+                            results.append(True)
+                        else:
+                            results.append(False)
 
                 if all(results):
                     self.face_verified = True
@@ -324,6 +321,7 @@ class EditEmployeeDialog(QDialog):
                     self.status_label.setText("Khuôn mặt không khớp")
                     self.status_label.setStyleSheet("color: red; font-size: 14px;")
 
+                # Xoá các tệp tạm
                 for temp_file in temp_files:
                     os.remove(temp_file)
 
@@ -342,8 +340,8 @@ class EditEmployeeDialog(QDialog):
         user_detail = session.query(user_details).filter_by(employee_code=self.employee_data['Mã NV']).first()
 
         if user_detail and user_detail.id:  # Kiểm tra nếu user_id tồn tại
-            # Truy vấn user_images bằng user_id từ bảng user_details
-            user_images_result = session.query(user_images).filter_by(user_id=user_detail.id).first()
+            # Xoá bản ghi cũ nếu tồn tại
+            session.query(user_images).filter_by(user_id=user_detail.id).delete()
 
             # Chuyển đổi ảnh thành base64
             base64_images = [label.convert_to_base64() for label in self.image_labels if not label.pixmap_image.isNull()]
@@ -352,13 +350,9 @@ class EditEmployeeDialog(QDialog):
             for idx, base64_str in enumerate(base64_images):
                 print(f"Ảnh {idx + 1}: {base64_str[:30]}...")  
 
-            if user_images_result:
-                # Cập nhật hình ảnh nếu đã có bản ghi, sử dụng phương thức ORM
-                session.query(user_images).filter_by(user_id=user_detail.id).update({"images": images_string})
-            else:
-                # Tạo bản ghi mới nếu chưa có
-                new_user_images = user_images.insert().values(user_id=user_detail.id, images=images_string)
-                session.execute(new_user_images)
+            # Tạo bản ghi mới cho hình ảnh
+            new_user_images = user_images.insert().values(user_id=user_detail.id, images=images_string)
+            session.execute(new_user_images)
 
             # Commit thay đổi để lưu vào database
             session.commit()
@@ -367,7 +361,7 @@ class EditEmployeeDialog(QDialog):
             self.parent().update_image_status(user_detail.employee_code, len(base64_images) > 0)
 
         session.close()
-        self.accept() 
+        self.accept()
 
 # class for chup anh button
 class CameraCaptureDialog(QDialog):
