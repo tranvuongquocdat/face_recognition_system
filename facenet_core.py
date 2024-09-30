@@ -75,10 +75,17 @@ class Facenet:
                 # Tính khoảng cách giữa embedding của khuôn mặt hiện tại và embedding trong cơ sở dữ liệu
                 frame_dists = np.linalg.norm(self.embeddings_np - frame_embedding, axis=1)
                 
-                # Kiểm tra nếu khoảng cách nhỏ hơn ngưỡng và lưu kết quả phù hợp
+                # Lưu trữ kết quả có khoảng cách nhỏ nhất và dưới ngưỡng
+                min_dist = float('inf')
+                best_match = None
                 for i, dist in enumerate(frame_dists):
-                    if dist < threshold:
-                        matches.append((self.names[i], dist))
+                    if dist < min_dist and dist < threshold:
+                        min_dist = dist
+                        best_match = (self.names[i], dist)
+
+                # Thêm khuôn mặt phù hợp nhất vào kết quả nếu tìm thấy
+                if best_match is not None:
+                    matches.append(best_match)
 
             return matches
 

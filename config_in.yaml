@@ -21,6 +21,7 @@ camera_name:
   camera: "CAMERA_1"
 
 # capture_id: "rtsp://admin:namtiep2005@192.168.1.25:554/Streaming/channels/101"
-capture_id: 0
+# capture_id: 0
+capture_id: "rtsp://pathtech:pathtech1@192.168.1.35:554/stream1"
 
 distance_threshold: 0.6

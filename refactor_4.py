@@ -23,6 +23,7 @@ from tqdm import tqdm
 from uuid import uuid4
 from facenet_core import *
 
+
 logging.basicConfig(level=logging.DEBUG)
 
 def load_config():
@@ -335,6 +336,53 @@ class LogCard(QtWidgets.QWidget):
         print("LogCard clicked!")
         self.clicked_signal.emit(self)
 
+# Thread for capturing frames
+class FrameCaptureThread(QThread):
+    frameCaptured = pyqtSignal(np.ndarray)  # Signal to send the captured frame
+
+    def __init__(self, camera_id):
+        super().__init__()
+        self.camera_id = camera_id
+        self.cap = None
+        self.running = True
+
+    def run(self):
+        self.cap = cv2.VideoCapture(self.camera_id)
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                self.frameCaptured.emit(frame)
+            time.sleep(0.03)  # Adjust frame capture interval as needed (30 FPS)
+
+    def stop(self):
+        self.running = False
+        self.cap.release()
+
+# Thread for face recognition
+class FaceRecognitionThread(QThread):
+    faceRecognized = pyqtSignal(list, object)  # Signal to send recognized faces data
+
+    def __init__(self, deepface, distance_threshold):
+        super().__init__()
+        self.deepface = deepface
+        self.distance_threshold = distance_threshold
+        self.frame = None
+        self.running = True
+
+    def set_frame(self, frame):
+        self.frame = frame
+
+    def run(self):
+        while self.running:
+            if self.frame is not None:
+                # Perform face recognition on the latest frame
+                people = self.deepface.find(self.frame, self.distance_threshold)
+                self.faceRecognized.emit(people, self.frame)
+            time.sleep(0.1)  # Adjust processing interval as needed
+
+    def stop(self):
+        self.running = False
+
 class AttendanceCheckingWindow(object):
     def setupUi(self, MainWindow):
         self.MainWindow = MainWindow
@@ -417,9 +465,18 @@ class AttendanceCheckingWindow(object):
         self.timer.timeout.connect(self.update_lcd_time)
         self.timer.start()
 
-        self.main_frame = QtCore.QTimer()
-        self.main_frame.timeout.connect(self.update_frame_raw)
-        self.main_frame.start()
+        # self.main_frame = QtCore.QTimer()
+        # self.main_frame.timeout.connect(self.update_frame_raw)
+        # self.main_frame.start()
+        # Initialize frame capture thread
+        self.frame_capture_thread = FrameCaptureThread(capture_id)
+        self.frame_capture_thread.frameCaptured.connect(self.on_frame_captured)
+        self.frame_capture_thread.start()
+
+        # Initialize face recognition thread
+        self.face_recognition_thread = FaceRecognitionThread(self.deepface, distance_threshold)
+        self.face_recognition_thread.faceRecognized.connect(self.on_face_recognized)
+        self.face_recognition_thread.start()
 
         self.capture_timer = QTimer()
         self.capture_timer.timeout.connect(self.capture_face)
@@ -529,6 +586,36 @@ class AttendanceCheckingWindow(object):
         logging.info("Restarting application...")
         self.MainWindow.close()  # Simulate pressing the "X" button
         subprocess.Popen([sys.executable, "attendance_tracking.py"])
+
+    def on_frame_captured(self, frame):
+        """Slot to handle the frame captured from the camera."""
+        # Display the frame
+        self.display_frame(frame)
+
+        # Send the frame to the face recognition thread
+        self.face_recognition_thread.set_frame(frame)
+
+    def on_face_recognized(self, people, frame):
+        """Slot to handle face recognition results."""
+        if len(people) > 0:
+            for person in people:
+                user_id = person[0].split('/')[0]
+                print(f"user: {user_id}")
+                user_name = self.get_user_name(user_id)  # Assuming get_user_name is a method that retrieves the user's name
+                print(f"user name: {user_name}")
+                employee_code = self.get_employee_code(user_id)
+                print(f"employee code: {employee_code}")
+
+                if user_id not in self.detection_count:
+                    self.detection_count[user_id] = 0
+                self.detection_count[user_id] += 1
+
+                if self.detection_count[user_id] >= 5 and self.should_log(user_id):
+                    self.face_detected = True
+                    self.last_detected_user_id = user_id
+                    self.last_detection_time = time.time()
+                    self.log_face_detected(user_id, user_name, True, frame)
+                    self.detection_count[user_id] = 0
 
     def update_frame_raw(self):
         try:
@@ -771,6 +858,8 @@ class AttendanceCheckingWindow(object):
         logging.debug("Resources cleaned up.")
 
     def closeEvent(self, event):
+        self.frame_capture_thread.stop()
+        self.face_recognition_thread.stop()
         self.cleanup_resources()
         super().closeEvent(event)
 
