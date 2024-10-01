@@ -24,4 +24,6 @@ camera_name:
 # capture_id: 0
 capture_id: "rtsp://pathtech:pathtech1@192.168.1.35:554/stream1"
 
+employee_capture_id: 0
+
 distance_threshold: 0.65
