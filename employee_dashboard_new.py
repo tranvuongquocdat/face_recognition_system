@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.DEBUG)
 
 def load_config():
-    with open(r"config/config_in.yaml", "r") as config_file:
+    with open(r"config/config_in.yaml", "r", encoding="utf8") as config_file:
         config = yaml.safe_load(config_file)
     return config
 

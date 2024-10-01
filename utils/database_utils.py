@@ -95,26 +95,24 @@ def sync_tables():
     print("Sync complete.")
 
 def sync_data_from_online_db():
-    pg_engine = create_engine(f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}')
-    sqlite_engine = create_engine(local_db_path)
+    pg_database_uri = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+    pg_engine = create_engine(pg_database_uri)
+
+    # SQLite database URI
+    sqlite_database_uri = 'sqlite:///local_attendance_tracking.db'
+    sqlite_engine = create_engine(sqlite_database_uri)
 
     # Create MetaData instance for PostgreSQL
     pg_metadata = MetaData()
     pg_metadata.reflect(bind=pg_engine)
 
     # Specify the tables you want to copy
-    tables_to_copy = ['departments', 'workshops', 'user_images', 'user_details']
+    tables_to_copy = ['departments','workshops','user_images', 'user_details', 'tracking_history', 'tracking_history_error']
 
-    # Iterate over specified tables and copy schema and data to SQLite with tqdm progress bar
-    for table_name in tqdm(tables_to_copy, desc="Copying tables"):
+    # Iterate over specified tables and copy schema and data to SQLite
+    for table_name in tables_to_copy:
         if table_name in pg_metadata.tables:
-
-            # Clear the table in SQLite before inserting new data
-            with sqlite_engine.connect() as connection:
-                connection.execute(text(f"DELETE FROM {table_name}"))
-                tqdm.write(f"Cleared table: {table_name} in local SQLite")
-
-            tqdm.write(f"Copying table: {table_name}")  # Use tqdm.write to avoid interrupting the progress bar
+            print(f"Copying table: {table_name}")
             pg_table = pg_metadata.tables[table_name]
 
             # Fetch data from PostgreSQL table
@@ -128,11 +126,11 @@ def sync_data_from_online_db():
                         # Convert UUIDs to strings
                         if len(data[col]) > 0 and isinstance(data[col].iloc[0], uuid.UUID):
                             data[col] = data[col].astype(str)
-                        
+
                         # Convert dictionaries or JSON-like objects to strings
                         elif isinstance(data[col].iloc[0], dict):
                             data[col] = data[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else x)
-            
+
             # Write data to SQLite table
             data.to_sql(table_name, sqlite_engine, if_exists='replace', index=False)
 
@@ -145,7 +143,7 @@ def sync_database():
     import json
 
     # Database connection URI for PostgreSQL
-    pg_database_uri = f'postgresql://{user}:{password}@{host}:{port}/{database}'
+    pg_database_uri = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
     pg_engine = create_engine(pg_database_uri)
 
     # SQLite database URI
