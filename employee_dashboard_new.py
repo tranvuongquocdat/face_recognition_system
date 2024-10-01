@@ -20,11 +20,11 @@ from deepface import DeepFace
 import warnings
 warnings.filterwarnings("ignore")
 
-user = "hrm"
-password = "hrm"
-host = "35.223.205.197"  
-port = "5432"  
-database = "attendance_tracking"
+user= "postgres"
+password= "123456"
+host= "localhost"
+port= "5432"
+database= "attendance_tracking"
 
 # Database connection URI
 DATABASE_URI = f'postgresql://{user}:{password}@{host}:{port}/{database}'
@@ -44,7 +44,7 @@ user_images = metadata.tables['user_images']
 departments = metadata.tables['departments'] 
 workshops = metadata.tables['workshops'] 
 
-def fetch_employee_data(order_by='Mã NV'):
+def fetch_employee_data(order_by='Tên NV'):
     session = Session()
 
     query = session.query(
@@ -62,9 +62,9 @@ def fetch_employee_data(order_by='Mã NV'):
     ).distinct()
 
     # Sắp xếp theo Mã NV hoặc Tên NV
-    if order_by == 'Mã NV':
-        query = query.order_by(user_details.c.employee_code) 
-    elif order_by == 'Tên NV':
+    # if order_by == 'Mã NV':
+    #     query = query.order_by(user_details.c.employee_code) 
+    if order_by == 'Tên NV':
         query = query.order_by(user_details.c.full_name) 
 
     # Execute query và xử lý kết quả
@@ -309,7 +309,7 @@ class EditEmployeeDialog(QDialog):
                             img1_path=temp_files[i],
                             img2_path=temp_files[j],
                             model_name=models[2],
-                            detector_backend=backends[1],
+                            detector_backend=backends[0],
                             threshold=0.6,
                             enforce_detection=False
                         )
@@ -696,6 +696,9 @@ class EmployeeDashboard(QWidget):
         error_dialog.exec()
 
     def display_table(self, df):
+        # Reset index để đảm bảo các chỉ số bắt đầu từ 0 và liên tục
+        df = df.reset_index(drop=True)
+
         self.table_widget.setRowCount(len(df))
         self.table_widget.setColumnCount(len(df.columns))
         self.table_widget.setHorizontalHeaderLabels(df.columns)
@@ -715,12 +718,18 @@ class EmployeeDashboard(QWidget):
                         label.setStyleSheet("color: red;")
                     self.table_widget.setCellWidget(i, j, label)
                 elif df.columns[j] == 'Thiết lập':
-                    # Add "Chỉnh sửa" và "Xóa NV" buttons
+                    # Lấy Mã NV của nhân viên hiện tại
+                    emp_id = df.at[i, 'Mã NV']
+                    
+                    # Tạo nút "Chỉnh sửa"
                     edit_button = QPushButton('Chỉnh sửa')
                     edit_button.setStyleSheet("background-color: blue; color: white;")
                     edit_button.setFixedSize(100, 20)
-                    edit_button.clicked.connect(lambda _, row=i: self.show_password_dialog(self.edit_employee, row))
+                    
+                    # Kết nối sự kiện nút "Chỉnh sửa" với Mã NV
+                    edit_button.clicked.connect(lambda checked, emp_id=emp_id: self.show_password_dialog(lambda: self.edit_employee(emp_id), row=None))
 
+                    # Tạo layout để chứa nút
                     hbox = QHBoxLayout()
                     hbox.addWidget(edit_button)
                     hbox_widget = QWidget()
@@ -729,9 +738,10 @@ class EmployeeDashboard(QWidget):
                 else:
                     item = QTableWidgetItem(str(df.iat[i, j]))
                     if df.columns[j] in ['Mã NV', 'Tên NV', 'Phòng ban', 'Xưởng']:
-                        item.setForeground(QColor(Qt.GlobalColor.black))  # Set text color to black
-                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make non-editable
+                        item.setForeground(QColor(Qt.GlobalColor.black))  # Đặt màu chữ là đen
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Đặt không cho chỉnh sửa
                     self.table_widget.setItem(i, j, item)
+
 
     def update_image_status(self, user_id, has_images):
         for row in range(self.df.shape[0]):
@@ -756,20 +766,30 @@ class EmployeeDashboard(QWidget):
         if name_filter:
             filtered_df = filtered_df[filtered_df['Tên NV'].astype(str).str.contains(name_filter, case=False, na=False)]
 
+        # Reset index để đảm bảo các chỉ số bắt đầu từ 0 và liên tục
+        filtered_df = filtered_df.reset_index(drop=True)
+
         self.display_table(filtered_df)
 
-    def edit_employee(self, row):
-        if self.df is not None:
-            employee_data = {
-                'Mã NV': self.df.iloc[row]['Mã NV'],
-                'Tên NV': self.df.iloc[row]['Tên NV'],
-                'Phòng ban': self.df.iloc[row]['Phòng ban'],
-                'Xưởng': self.df.iloc[row]['Xưởng']
-            }
 
-            dialog = EditEmployeeDialog(employee_data, self.engine, self)
-            if dialog.exec():
-                print("Thông tin đã được lưu.")
+    def edit_employee(self, emp_id):
+        if self.df is not None:
+            # Tìm hàng dữ liệu với Mã NV tương ứng
+            employee_row = self.df[self.df['Mã NV'] == emp_id]
+            if not employee_row.empty:
+                employee_data = {
+                    'Mã NV': employee_row.iloc[0]['Mã NV'],
+                    'Tên NV': employee_row.iloc[0]['Tên NV'],
+                    'Phòng ban': employee_row.iloc[0]['Phòng ban'],
+                    'Xưởng': employee_row.iloc[0]['Xưởng']
+                }
+
+                dialog = EditEmployeeDialog(employee_data, self.engine, self)
+                if dialog.exec():
+                    print("Thông tin đã được lưu.")
+            else:
+                self.show_error_message(f"Không tìm thấy nhân viên với Mã NV: {emp_id}")
+
 
     def show_password_dialog(self, action, row):
         dialog = QDialog(self)

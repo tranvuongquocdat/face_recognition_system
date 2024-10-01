@@ -25,7 +25,7 @@ from uuid import uuid4
 logging.basicConfig(level=logging.DEBUG)
 
 def load_config():
-    with open("config_in.yaml", "r") as config_file:
+    with open("./config/config_in.yaml", "r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     return config
 
@@ -145,7 +145,7 @@ def sync_database():
     import json
 
     # Database connection URI for PostgreSQL
-    pg_database_uri = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+    pg_database_uri = f'postgresql://{user}:{password}@{host}:{port}/{database}'
     pg_engine = create_engine(pg_database_uri)
 
     # SQLite database URI
@@ -194,3 +194,6 @@ def sync_database():
         pg_data.to_sql(table_name, sqlite_engine, if_exists='replace', index=False)
 
     print("Table sync complete.")
+
+
+

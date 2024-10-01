@@ -1,0 +1,27 @@
+database:
+  local:
+    path: "sqlite:///local_attendance_tracking.db"  # Đường dẫn tới local database
+  online:
+    user: "hrm"
+    password: "hrm"
+    host: "35.223.205.197"
+    port: "5432"
+    database: "attendance_tracking"
+
+status:
+  status: "IN"
+
+app:
+  restart_time: "23:59"
+
+image_path:
+  image: "image_in"
+
+camera_name:
+  camera: "CAMERA_1"
+
+# capture_id: "rtsp://admin:namtiep2005@192.168.1.25:554/Streaming/channels/101"
+# capture_id: 0
+capture_id: "rtsp://pathtech:pathtech1@192.168.1.35:554/stream1"
+
+distance_threshold: 0.65

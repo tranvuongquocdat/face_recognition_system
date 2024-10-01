@@ -26,7 +26,7 @@ from uuid import uuid4
 logging.basicConfig(level=logging.DEBUG)
 
 def load_config():
-    with open("config_out.yaml", "r") as config_file:
+    with open("config_out.yaml", "r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     return config
 
@@ -178,63 +178,6 @@ def qimage_to_numpy(qimage):
     arr = np.array(ptr).reshape(height, width, 3)  # Convert to a numpy array and reshape
     return arr
 
-def sync_database():
-    from sqlalchemy import create_engine, MetaData, Table
-    import pandas as pd
-    import uuid
-    import json
-
-    # Database connection URI for PostgreSQL
-    pg_database_uri = f'postgresql://{user}:{password}@{host}:{port}/{database}'
-    pg_engine = create_engine(pg_database_uri)
-
-    # SQLite database URI
-    sqlite_database_uri = 'sqlite:///local_attendance_tracking.db'
-    sqlite_engine = create_engine(sqlite_database_uri)
-
-    # Create MetaData instance for PostgreSQL
-    pg_metadata = MetaData()
-    pg_metadata.reflect(bind=pg_engine)
-
-    # Specify the table to copy
-    table_name = 'user_details'
-
-    # Fetch data from PostgreSQL table
-    pg_data = pd.read_sql_table(table_name, pg_engine)
-
-    # Check if the DataFrame is not empty before processing
-    if not pg_data.empty:
-        # Convert UUID columns to strings and handle complex data
-        for col in pg_data.columns:
-            if pg_data[col].dtype == 'object':
-                # Convert UUIDs to strings
-                if len(pg_data[col]) > 0 and isinstance(pg_data[col].iloc[0], uuid.UUID):
-                    pg_data[col] = pg_data[col].astype(str)
-                
-                # Convert dictionaries or JSON-like objects to strings
-                elif isinstance(pg_data[col].iloc[0], dict):
-                    pg_data[col] = pg_data[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else x)
-
-        # Fetch existing local data from SQLite
-        local_data = pd.read_sql_table(table_name, sqlite_engine)
-
-        # If local data exists, compare and sync
-        if not local_data.empty:
-            # Find rows in local_data that are not in pg_data
-            merged = local_data.merge(pg_data, on='id', how='left', indicator=True)
-            rows_to_delete = merged[merged['_merge'] == 'left_only']['id']
-
-            # Delete rows in SQLite that are not present in PostgreSQL
-            if not rows_to_delete.empty:
-                ids_to_delete = tuple(rows_to_delete)
-                with sqlite_engine.connect() as conn:
-                    conn.execute(f"DELETE FROM {table_name} WHERE id IN {ids_to_delete}")
-        
-        # Write PostgreSQL data to SQLite, replacing existing table
-        pg_data.to_sql(table_name, sqlite_engine, if_exists='replace', index=False)
-
-    print("Table sync complete.")
-
 
 class UpdateFrameThread(QThread):
     update_frame_signal = pyqtSignal(list, bool, object)
@@ -300,9 +243,10 @@ class UpdateFrameCascadeThread(QThread):
             ret, frame = self.cap.read()
             if ret:
                 frame = cv2.flip(frame, 1)
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+                # faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                faces = []
                 self.update_cascade_signal.emit(faces, frame)
             time.sleep(0.02)
 
@@ -369,7 +313,7 @@ class LogCard(QtWidgets.QWidget):
             tracking_history_error = db.Table('tracking_history_error', metadata, autoload_with=engine)
 
             # Chuyển đổi thời gian từ QDateTime sang chuỗi
-            time_object = datetime.strptime(now.toString("yyyy-MM-dd HH:mm:ss"), "%Y-%m-%d %H:%M:%S")
+            time_object = self.timestamp
             logging.debug("Preparing to log to local database")
 
             # Generate a UUID for the primary key `id`
@@ -378,10 +322,10 @@ class LogCard(QtWidgets.QWidget):
             # Insert into the tracking_history table in local database
             insert_query = db.insert(self.tracking_history_error).values(
                 id=log_id,  # UUID dưới dạng chuỗi
-                user_id=user_id,  
+                user_id=self.user_id,  
                 time=time_object,
                 status=status_in_out,
-                image=image_base64,
+                image=self.image_base64,
                 camera_id=camera_name
             )
 

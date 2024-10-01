@@ -1,0 +1,25 @@
+database:
+  local:
+    path: "sqlite:///local_attendance_tracking.db"  # Đường dẫn tới local database
+  online:
+    user: "postgres"
+    password: "123456"
+    host: "localhost"
+    port: "5432"
+    database: "attendance_tracking"
+
+status:
+  status: "OUT"
+
+app:
+  restart_time: "23:59"
+
+image_path:
+  image: "image_out"
+
+camera_name:
+  camera: "CAMERA_1"
+
+capture_id: 'rtsp://camera_in:namtiep2005@192.168.1.108/554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif'
+
+distance_threshold: 0.6

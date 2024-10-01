@@ -3,7 +3,7 @@ import sqlalchemy as db
 from sqlalchemy.sql import select
 import pandas as pd
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QDialog, QCalendarWidget, QFileDialog,QScrollBar, QListView
-from convert_check_in_data import *
+from utils.convert_check_in_data import *
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -22,7 +22,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 def load_config():
-    with open("config_in.yaml", "r") as config_file:
+    with open("config/config_in.yaml", "r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     return config
 

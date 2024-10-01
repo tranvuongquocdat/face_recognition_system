@@ -22,6 +22,7 @@ import pandas as pd
 from tqdm import tqdm 
 from uuid import uuid4
 
+
 def base64_to_pixmap(base64_str):
     image_data = base64.b64decode(base64_str)
     image = QImage.fromData(image_data)

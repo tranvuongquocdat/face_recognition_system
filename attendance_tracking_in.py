@@ -22,10 +22,18 @@ import pandas as pd
 from tqdm import tqdm 
 from uuid import uuid4
 
+from utils.facenet_core import *
+from utils.image_processing_utils import *
+from utils.database_utils import *
+from UI.attendance_ui import AttendanceCheckingWindowUI, LogCard  # Import the separated UI
+
+cv2.ocl.setUseOpenCL(False)
+cv2.setUseOptimized(False)
+
 logging.basicConfig(level=logging.DEBUG)
 
 def load_config():
-    with open("config_in.yaml", "r") as config_file:
+    with open("config/config_in.yaml", "r", encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
     return config
 
@@ -50,104 +58,6 @@ status_in_out = config['status']['status']
 # Access the restart time config
 restart_time = config['app']['restart_time']
 
-def base64_to_pixmap(base64_str):
-    image_data = base64.b64decode(base64_str)
-    image = QImage.fromData(image_data)
-    return QPixmap.fromImage(image).scaled(
-        260, 200, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-        QtCore.Qt.TransformationMode.SmoothTransformation
-    )
-
-def sync_tables():
-    # Create engines for local SQLite and PostgreSQL databases
-    pg_engine = create_engine(f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}')
-    sqlite_engine = create_engine(local_db_path)
-
-    # Fetch data from local SQLite
-    local_tracking_history = pd.read_sql_table('tracking_history', sqlite_engine)
-    local_tracking_history_error = pd.read_sql_table('tracking_history_error', sqlite_engine)
-
-    # Convert the `id` and `user_id` to UUID for PostgreSQL
-    def convert_to_uuid(val):
-        try:
-            if val and isinstance(val, str) and len(val) == 36:
-                return uuid.UUID(val)
-            else:
-                return None
-        except (ValueError, TypeError):
-            return None
-
-    # Apply conversion for tracking_history table with progress bar
-    print("Converting tracking_history table UUIDs...")
-    for col in tqdm(['id', 'user_id'], desc="Tracking History"):
-        local_tracking_history[col] = local_tracking_history[col].apply(convert_to_uuid)
-
-    # Apply conversion for tracking_history_error table with progress bar
-    print("Converting tracking_history_error table UUIDs...")
-    for col in tqdm(['id', 'user_id'], desc="Tracking History Error"):
-        local_tracking_history_error[col] = local_tracking_history_error[col].apply(convert_to_uuid)
-
-    # Convert local datetime to PostgreSQL timestamp for `time` field
-    print("Converting datetime fields...")
-    local_tracking_history['time'] = pd.to_datetime(local_tracking_history['time'])
-    local_tracking_history_error['time'] = pd.to_datetime(local_tracking_history_error['time'])
-
-    # Sync the data into PostgreSQL
-    with pg_engine.connect() as conn:
-        print("Syncing tracking_history table to PostgreSQL...")
-        local_tracking_history.to_sql('tracking_history', conn, if_exists='replace', index=False)
-
-        print("Syncing tracking_history_error table to PostgreSQL...")
-        local_tracking_history_error.to_sql('tracking_history_error', conn, if_exists='replace', index=False)
-
-    print("Sync complete.")
-
-def sync_data_from_online_db():
-    pg_engine = create_engine(f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}')
-    sqlite_engine = create_engine(local_db_path)
-
-    # Create MetaData instance for PostgreSQL
-    pg_metadata = MetaData()
-    pg_metadata.reflect(bind=pg_engine)
-
-    # Specify the tables you want to copy
-    tables_to_copy = ['departments', 'workshops', 'user_images', 'user_details']
-
-    # Iterate over specified tables and copy schema and data to SQLite with tqdm progress bar
-    for table_name in tqdm(tables_to_copy, desc="Copying tables"):
-        if table_name in pg_metadata.tables:
-
-            # Clear the table in SQLite before inserting new data
-            with sqlite_engine.connect() as connection:
-                connection.execute(text(f"DELETE FROM {table_name}"))
-                tqdm.write(f"Cleared table: {table_name} in local SQLite")
-
-            tqdm.write(f"Copying table: {table_name}")  # Use tqdm.write to avoid interrupting the progress bar
-            pg_table = pg_metadata.tables[table_name]
-
-            # Fetch data from PostgreSQL table
-            data = pd.read_sql_table(table_name, pg_engine)
-
-            # Check if the DataFrame is not empty before processing
-            if not data.empty:
-                # Convert UUID columns to strings and handle complex data
-                for col in data.columns:
-                    if data[col].dtype == 'object':
-                        # Convert UUIDs to strings
-                        if len(data[col]) > 0 and isinstance(data[col].iloc[0], uuid.UUID):
-                            data[col] = data[col].astype(str)
-                        
-                        # Convert dictionaries or JSON-like objects to strings
-                        elif isinstance(data[col].iloc[0], dict):
-                            data[col] = data[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else x)
-            
-            # Write data to SQLite table
-            data.to_sql(table_name, sqlite_engine, if_exists='replace', index=False)
-
-    print("Database copy complete.")
-
-
-
 class SyncThread(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -166,337 +76,82 @@ class SyncThread(QThread):
         except Exception as e:
             print(f"Lỗi trong quá trình đồng bộ: {e}")
 
-def qimage_to_numpy(qimage):
-    # Convert QImage to byte array
-    qimage = qimage.convertToFormat(QImage.Format.Format_RGB888)
-    width = qimage.width()
-    height = qimage.height()
+class FrameCaptureThread(QThread):
+    frameCaptured = pyqtSignal(np.ndarray)  # Signal to send the captured frame
 
-    ptr = qimage.bits()
-    ptr.setsize(height * width * 3)  # 3 bytes per pixel for RGB format
-    arr = np.array(ptr).reshape(height, width, 3)  # Convert to a numpy array and reshape
-    return arr
-
-def sync_database():
-    from sqlalchemy import create_engine, MetaData, Table
-    import pandas as pd
-    import uuid
-    import json
-
-    # Database connection URI for PostgreSQL
-    pg_database_uri = f'postgresql://{user}:{password}@{host}:{port}/{database}'
-    pg_engine = create_engine(pg_database_uri)
-
-    # SQLite database URI
-    sqlite_database_uri = 'sqlite:///local_attendance_tracking.db'
-    sqlite_engine = create_engine(sqlite_database_uri)
-
-    # Create MetaData instance for PostgreSQL
-    pg_metadata = MetaData()
-    pg_metadata.reflect(bind=pg_engine)
-
-    # Specify the table to copy
-    table_name = 'user_details'
-
-    # Fetch data from PostgreSQL table
-    pg_data = pd.read_sql_table(table_name, pg_engine)
-
-    # Check if the DataFrame is not empty before processing
-    if not pg_data.empty:
-        # Convert UUID columns to strings and handle complex data
-        for col in pg_data.columns:
-            if pg_data[col].dtype == 'object':
-                # Convert UUIDs to strings
-                if len(pg_data[col]) > 0 and isinstance(pg_data[col].iloc[0], uuid.UUID):
-                    pg_data[col] = pg_data[col].astype(str)
-                
-                # Convert dictionaries or JSON-like objects to strings
-                elif isinstance(pg_data[col].iloc[0], dict):
-                    pg_data[col] = pg_data[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else x)
-
-        # Fetch existing local data from SQLite
-        local_data = pd.read_sql_table(table_name, sqlite_engine)
-
-        # If local data exists, compare and sync
-        if not local_data.empty:
-            # Find rows in local_data that are not in pg_data
-            merged = local_data.merge(pg_data, on='id', how='left', indicator=True)
-            rows_to_delete = merged[merged['_merge'] == 'left_only']['id']
-
-            # Delete rows in SQLite that are not present in PostgreSQL
-            if not rows_to_delete.empty:
-                ids_to_delete = tuple(rows_to_delete)
-                with sqlite_engine.connect() as conn:
-                    conn.execute(f"DELETE FROM {table_name} WHERE id IN {ids_to_delete}")
-        
-        # Write PostgreSQL data to SQLite, replacing existing table
-        pg_data.to_sql(table_name, sqlite_engine, if_exists='replace', index=False)
-
-    print("Table sync complete.")
-
-
-class UpdateFrameThread(QThread):
-    update_frame_signal = pyqtSignal(list, bool, object)
-
-    def __init__(self, cap, parent=None):
-        super().__init__(None)
-        self.cap = cap
+    def __init__(self, camera_id):
+        super().__init__()
+        self.camera_id = camera_id
+        self.cap = None
         self.running = True
-        self.window = parent
 
     def run(self):
+        self.cap = cv2.VideoCapture(self.camera_id)
         while self.running:
             ret, frame = self.cap.read()
             if ret:
-                # frame = cv2.flip(frame, 1)
-
-                # Make sure the frame is in the correct format for DeepFace (which expects a numpy array if not a path)
-                people = DeepFace.find(img_path=frame, 
-                                    db_path=image_folder, 
-                                    model_name="Facenet512", 
-                                    distance_metric="euclidean_l2", 
-                                    detector_backend="opencv", 
-                                    enforce_detection=False)
-
-                # print(f"people: {people}")
-
-                # Check if people contains results
-                if len(people) > 0:
-                    # The output from DeepFace.find() is a list of DataFrames, we take the first DataFrame
-                    df_people = people[0]
-
-                    # Filter out people based on the distance
-                    filtered_people = df_people[df_people['distance'] <= distance_threshold].to_dict('records')
-                    
-                    # print(f"filtered people: {filtered_people}")
-                else:
-                    filtered_people = []
-                    print("No people found")
-
-                # Emit the signal with the filtered people and the frame
-                self.update_frame_signal.emit(filtered_people, ret, frame)
-            time.sleep(0.02)
-
-    def stop(self):
-        self.running = False
-        logging.debug("Stopping thread...")
-        self.quit()
-        self.wait()
-        self.cap.release()
-        logging.debug("Thread stopped and camera released.")
-
-class UpdateFrameCascadeThread(QThread):
-    update_cascade_signal = pyqtSignal(list, object)
-
-    def __init__(self, cap, parent=None):
-        super().__init__(None)
-        self.cap = cap
-        self.running = True
-        self.window = parent
-
-    def run(self):
-        while self.running:
-            ret, frame = self.cap.read()
-            if ret:
-                # frame = cv2.flip(frame, 1)
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-                self.update_cascade_signal.emit(faces, frame)
-            time.sleep(0.02)
+                self.frameCaptured.emit(frame)
+            time.sleep(0.03)  # Adjust frame capture interval as needed (30 FPS)
 
     def stop(self):
         self.running = False
         self.cap.release()
-        self.quit()
 
-class LogCard(QtWidgets.QWidget):
-    clicked_signal = pyqtSignal(object)
+# Thread for face recognition
+class FaceRecognitionThread(QThread):
+    faceRecognized = pyqtSignal(list, object)  # Signal to send recognized faces data
 
-    def __init__(self, user_id, employee_code, user_name, timestamp, status, image_base64=None, parent=None):
-        super().__init__(parent)
-        self.user_id = user_id
-        self.employee_code = employee_code
-        self.user_name = user_name
-        self.timestamp = timestamp
-        self.status = status
-        self.image_base64 = image_base64
+    def __init__(self, deepface, distance_threshold):
+        super().__init__()
+        self.deepface = deepface
+        self.distance_threshold = distance_threshold
+        self.frame = None
+        self.running = True
 
-        self.setFixedSize(320, 320)
-        self.setStyleSheet("border: 1px solid black; background-color: white;")
-        self.layout = QtWidgets.QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 10, 10, 10)
+    def set_frame(self, frame):
+        self.frame = frame
 
-        self.scene = QtWidgets.QGraphicsScene(self)
-        self.view = QtWidgets.QGraphicsView(self.scene, self)
-        self.view.setFixedSize(300, 300)
-        self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.layout.addWidget(self.view)
+    def run(self):
+        while self.running:
+            if self.frame is not None:
+                # Perform face recognition on the latest frame
+                people = self.deepface.find(self.frame, self.distance_threshold)
+                self.faceRecognized.emit(people, self.frame)
+            time.sleep(0.1)  # Adjust processing interval as needed
 
-        message = f"ID: {self.employee_code}\nHọ Tên: {self.user_name}\nThời gian: {self.timestamp}\nĐIỂM DANH THÀNH CÔNG !!!"
-        self.text_item = self.scene.addText(message)
-        self.text_item.setTextWidth(260)
-        self.text_item.setDefaultTextColor(QtGui.QColor("black"))
-        font = QtGui.QFont()
-        font.setPointSize(10)
-        self.text_item.setFont(font)
-        self.text_item.setPos(10, 10)
+    def stop(self):
+        self.running = False
 
-        if self.image_base64:
-            pixmap = base64_to_pixmap(self.image_base64)
-            image_item = self.scene.addPixmap(pixmap)
-            image_item.setPos(10, self.text_item.boundingRect().height() + 20)
-
-        self.scene.setSceneRect(0, 0, 300, 300)
-        self.clicked_signal.connect(self.handle_click)
-
-    def handle_click(self):
-        # Display full error information when the log card is clicked
-        error_message = (f"ID: {self.employee_code}\n"
-                        f"name: {self.user_name}\n"
-                         f"Thời gian: {self.timestamp}\n"
-                         f"BÁO LỖI THÀNH CÔNG ;.;")
-        self.text_item.setPlainText(error_message)
-
-        # Log the error directly to the database
-        try:
-            # Open a database connection
-            engine = db.create_engine(local_db_path)
-            connection = engine.connect()
-            metadata = db.MetaData()
-            tracking_history_error = db.Table('tracking_history_error', metadata, autoload_with=engine)
-
-            # Chuyển đổi thời gian từ QDateTime sang chuỗi
-            time_object = datetime.strptime(now.toString("yyyy-MM-dd HH:mm:ss"), "%Y-%m-%d %H:%M:%S")
-            logging.debug("Preparing to log to local database")
-
-            # Generate a UUID for the primary key `id`
-            log_id = str(uuid4())  # Chuyển UUID thành chuỗi
-
-            # Insert into the tracking_history table in local database
-            insert_query = db.insert(self.tracking_history_error).values(
-                id=log_id,  # UUID dưới dạng chuỗi
-                user_id=user_id,  
-                time=time_object,
-                status=status_in_out,
-                image=image_base64,
-                camera_id=camera_name
-            )
-
-            logging.debug(f"Executing SQL: {insert_query}")
-            self.connection.execute(insert_query)
-            self.connection.commit()
-            logging.debug("Log error to local database successful")
-
-        except Exception as e:
-            logging.error(f"Error logging to database: {e}")
-        
-        finally:
-            # Close the database connection
-            connection.close()
-            logging.debug("Database connection closed")
-
-    def enterEvent(self, event):
-        self.setStyleSheet("border: 1px solid black; background-color: lightgray;")
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self.setStyleSheet("border: 1px solid black; background-color: white;")
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        print("LogCard clicked!")
-        self.clicked_signal.emit(self)
-
-class AttendanceCheckingWindow(object):
-    def setupUi(self, MainWindow):
-        self.MainWindow = MainWindow
-        MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(1920, 1080)
-
-        self.centralwidget = QtWidgets.QWidget(parent=MainWindow)
-        self.centralwidget.setObjectName("centralwidget")
-        self.camera_area_widget = QtWidgets.QLabel(parent=self.centralwidget)
-        self.camera_area_widget.setGeometry(QtCore.QRect(30, 90, 1321, 900))
-        self.camera_area_widget.setStyleSheet("""background-color:rgb(246, 247, 245);
-                                               border: 1px solid black;
-                                               """)
-        self.camera_area_widget.setObjectName("camera_area_widget")
-        self.camera_area_widget.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        self.thong_tin_diem_danh = QtWidgets.QScrollArea(parent=self.centralwidget)
-        self.thong_tin_diem_danh.setGeometry(QtCore.QRect(1380, 90, 350, 900))
-        self.thong_tin_diem_danh.setWidgetResizable(True)
-        self.thong_tin_diem_danh.setObjectName("thong_tin_diem_danh")
-        self.thong_tin_diem_danh.setStyleSheet("""background-color:rgb(246, 247, 245);
-                                               border: 1px solid black;
-                                               """)
-
-        self.log_container = QtWidgets.QWidget()
-        self.log_layout = QtWidgets.QVBoxLayout(self.log_container)
-        self.log_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.log_layout.setSpacing(10)
-        self.log_container.setLayout(self.log_layout)
-
-        self.thong_tin_diem_danh.setWidget(self.log_container)
-
+class AttendanceCheckingWindow(AttendanceCheckingWindowUI):  # Inherit from the UI class
+    def __init__(self):
+        super().__init__()
+        self.deepface = None
+        self.frame_capture_thread = None
+        self.face_recognition_thread = None
+        self.log_cards = []
         self.last_detection_times = {}
         self.detection_count = {}
 
-        self.lcdNumber = QtWidgets.QLCDNumber(parent=self.centralwidget)
-        self.lcdNumber.setGeometry(QtCore.QRect(1100, 10, 241, 61))
-        font = QtGui.QFont()
-        font.setPointSize(20)
-        self.lcdNumber.setFont(font)
-        self.lcdNumber.setObjectName("lcdNumber")
-        self.lcdNumber.setDigitCount(8)
-        self.lcdNumber.setStyleSheet("color: rgb(204, 0, 15);")
-
-        self.label = QtWidgets.QLabel(parent=self.centralwidget)
-        self.label.setGeometry(QtCore.QRect(1420, 20, 300, 41))
-        font = QtGui.QFont()
-        font.setFamily("Bahnschrift SemiBold")
-        font.setPointSize(20)
-        self.label.setFont(font)
-        self.label.setObjectName("label")
-        self.pushButton = QtWidgets.QPushButton(parent=self.centralwidget)
-        self.pushButton.setGeometry(QtCore.QRect(30, 20, 131, 41))
-        font = QtGui.QFont()
-        font.setFamily("Bahnschrift SemiBold")
-        font.setPointSize(20)
-        self.pushButton.setFont(font)
-        self.pushButton.setObjectName("pushButton")
-        MainWindow.setCentralWidget(self.centralwidget)
-        self.menubar = QtWidgets.QMenuBar(parent=MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 1907, 22))
-        self.menubar.setObjectName("menubar")
-        MainWindow.setMenuBar(self.menubar)
-        self.statusbar = QtWidgets.QStatusBar(parent=MainWindow)
-        self.statusbar.setObjectName("statusbar")
-        MainWindow.setStatusBar(self.statusbar)
-
-        self.retranslateUi(MainWindow)
-        QtCore.QMetaObject.connectSlotsByName(MainWindow)
-        self.pushButton.clicked.connect(self.open_home_page)
-
-        self.cap = cv2.VideoCapture(capture_id)
+    def setupUi(self, MainWindow):
+        super().setupUi(MainWindow)  # Call the UI setup from the inherited class
+        self.deepface = Facenet(image_folder)
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_lcd_time)
         self.timer.start()
 
-        self.thread_frame_cascade = UpdateFrameCascadeThread(self.cap, self)
-        self.thread_frame_cascade.update_cascade_signal.connect(self.update_frame_cascade_logic)
-        self.thread_frame_cascade.start()
-
         self.setup_database()
         # self.clear_images_folder()  # Ensure folder is cleared
         # self.load_images_from_database()  # Load images after clearing
 
-        self.thread_frame = UpdateFrameThread(self.cap, self)
-        self.thread_frame.update_frame_signal.connect(self.update_frame_logic)
-        self.thread_frame.start()
+        self.frame_capture_thread = FrameCaptureThread(capture_id)
+        self.frame_capture_thread.frameCaptured.connect(self.on_frame_captured)
+        self.frame_capture_thread.start()
+
+        # Initialize face recognition thread
+        self.face_recognition_thread = FaceRecognitionThread(self.deepface, distance_threshold)
+        self.face_recognition_thread.faceRecognized.connect(self.on_face_recognized)
+        self.face_recognition_thread.start()
 
         self.capture_timer = QTimer()
         self.capture_timer.timeout.connect(self.capture_face)
@@ -607,6 +262,42 @@ class AttendanceCheckingWindow(object):
         self.MainWindow.close()  # Simulate pressing the "X" button
         subprocess.Popen([sys.executable, "attendance_tracking.py"])
 
+    def on_frame_captured(self, frame):
+        """Slot to handle the frame captured from the camera."""
+        # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        # for face in faces:
+        #     x, y, w, h = face
+        #     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        # Display the frame
+        self.display_frame(frame)
+
+        # Send the frame to the face recognition thread
+        self.face_recognition_thread.set_frame(frame)
+
+    def on_face_recognized(self, people, frame):
+        """Slot to handle face recognition results."""
+        if len(people) > 0:
+            for person in people:
+                user_id = person[0].split('/')[0]
+                print(f"user: {user_id}")
+                user_name = self.get_user_name(user_id)  # Assuming get_user_name is a method that retrieves the user's name
+                print(f"user name: {user_name}")
+                employee_code = self.get_employee_code(user_id)
+                print(f"employee code: {employee_code}")
+
+                if user_id not in self.detection_count:
+                    self.detection_count[user_id] = 0
+                self.detection_count[user_id] += 1
+
+                if self.detection_count[user_id] >= 5 and self.should_log(user_id):
+                    self.face_detected = True
+                    self.last_detected_user_id = user_id
+                    self.last_detection_time = time.time()
+                    self.log_face_detected(user_id, user_name, True, frame)
+                    self.detection_count[user_id] = 0
+
     def update_frame_logic(self, people, ret, frame):
         if len(people) > 0:
             try:
@@ -689,7 +380,7 @@ class AttendanceCheckingWindow(object):
         self.camera_area_widget.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
     def log_face_detected(self, user_id, user_name, ret, frame):
-        # frame = cv2.flip(frame, 1)
+        frame = cv2.flip(frame, 1)
         print("start log face detected")
         self.capture_face(user_id, user_name, ret, frame)
 
@@ -706,7 +397,7 @@ class AttendanceCheckingWindow(object):
         if self.face_detected and user_id:
             if self.should_log(user_id):
                 if ret:
-                    # frame = cv2.flip(frame, 1)
+                    frame = cv2.flip(frame, 1)
                     now = QDateTime.currentDateTime()
                     image_base64 = self.convert_frame_to_base64(frame)
                     print("start log to db")
