@@ -4,7 +4,8 @@ import pandas as pd
 import cv2
 import base64
 import tempfile
-import uuid
+import yaml 
+import logging
 from PyQt6 import QtWidgets, QtGui
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLineEdit, QPushButton, 
@@ -15,16 +16,28 @@ from PyQt6.QtGui import QColor, QPixmap, QPainter, QFont, QImage, QPen
 from PyQt6.QtCore import Qt, QRect, QTimer, QBuffer, QIODevice
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import sessionmaker
-from deepface import DeepFace
+from utils.facenet_core import Facenet
 
 import warnings
 warnings.filterwarnings("ignore")
 
-user= "postgres"
-password= "123456"
-host= "localhost"
-port= "5432"
-database= "attendance_tracking"
+logging.basicConfig(level=logging.DEBUG)
+
+def load_config():
+    with open(r"config/config_in.yaml", "r") as config_file:
+        config = yaml.safe_load(config_file)
+    return config
+
+# Load config
+config = load_config()
+
+# Access the database config for local and online databases
+user = config['database']['online']['user']
+password = config['database']['online']['password']
+host = config['database']['online']['host']
+port = config['database']['online']['port']
+database = config['database']['online']['database']
+capture_id = config['employee_capture_id']
 
 # Database connection URI
 DATABASE_URI = f'postgresql://{user}:{password}@{host}:{port}/{database}'
@@ -44,7 +57,7 @@ user_images = metadata.tables['user_images']
 departments = metadata.tables['departments'] 
 workshops = metadata.tables['workshops'] 
 
-def fetch_employee_data(order_by='Tên NV'):
+def fetch_employee_data(order_by='Mã NV'):
     session = Session()
 
     query = session.query(
@@ -62,9 +75,9 @@ def fetch_employee_data(order_by='Tên NV'):
     ).distinct()
 
     # Sắp xếp theo Mã NV hoặc Tên NV
-    # if order_by == 'Mã NV':
-    #     query = query.order_by(user_details.c.employee_code) 
-    if order_by == 'Tên NV':
+    if order_by == 'Mã NV':
+        query = query.order_by(user_details.c.employee_code) 
+    elif order_by == 'Tên NV':
         query = query.order_by(user_details.c.full_name) 
 
     # Execute query và xử lý kết quả
@@ -288,32 +301,28 @@ class EditEmployeeDialog(QDialog):
 
     
     def verify_faces(self):
-        backends = ["opencv", "ssd", "dlib", "mtcnn", "retinaface"]
-        models = ["VGG-Face", "Facenet", "Facenet512", "OpenFace", "DeepFace", "DeepID", "ArcFace", "Dlib", "SFace"]
-
         if all(label.pixmap_image and not label.pixmap_image.isNull() for label in self.image_labels):
             try:
                 temp_files = []
                 results = []
 
-                # save to temp folder
+                # Lưu các ảnh vào thư mục tạm
                 for label in self.image_labels:
                     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
                     label.pixmap_image.save(temp_file.name)
                     temp_files.append(temp_file.name)
 
-                # verify images
+                # Verify logic from the second code
+                facenet = Facenet()
                 for i in range(len(temp_files) - 1):
                     for j in range(i + 1, len(temp_files)):
-                        result = DeepFace.verify(
-                            img1_path=temp_files[i],
-                            img2_path=temp_files[j],
-                            model_name=models[2],
-                            detector_backend=backends[0],
-                            threshold=0.6,
-                            enforce_detection=False
-                        )
-                        results.append(result['verified'])
+                        img1 = cv2.imread(temp_files[i])
+                        img2 = cv2.imread(temp_files[j])
+
+                        if facenet.verify(img1, img2):
+                            results.append(True)
+                        else:
+                            results.append(False)
 
                 if all(results):
                     self.face_verified = True
@@ -324,6 +333,7 @@ class EditEmployeeDialog(QDialog):
                     self.status_label.setText("Khuôn mặt không khớp")
                     self.status_label.setStyleSheet("color: red; font-size: 14px;")
 
+                # Xoá các tệp tạm
                 for temp_file in temp_files:
                     os.remove(temp_file)
 
@@ -342,8 +352,8 @@ class EditEmployeeDialog(QDialog):
         user_detail = session.query(user_details).filter_by(employee_code=self.employee_data['Mã NV']).first()
 
         if user_detail and user_detail.id:  # Kiểm tra nếu user_id tồn tại
-            # Truy vấn user_images bằng user_id từ bảng user_details
-            user_images_result = session.query(user_images).filter_by(user_id=user_detail.id).first()
+            # Xoá bản ghi cũ nếu tồn tại
+            session.query(user_images).filter_by(user_id=user_detail.id).delete()
 
             # Chuyển đổi ảnh thành base64
             base64_images = [label.convert_to_base64() for label in self.image_labels if not label.pixmap_image.isNull()]
@@ -352,13 +362,9 @@ class EditEmployeeDialog(QDialog):
             for idx, base64_str in enumerate(base64_images):
                 print(f"Ảnh {idx + 1}: {base64_str[:30]}...")  
 
-            if user_images_result:
-                # Cập nhật hình ảnh nếu đã có bản ghi, sử dụng phương thức ORM
-                session.query(user_images).filter_by(user_id=user_detail.id).update({"images": images_string})
-            else:
-                # Tạo bản ghi mới nếu chưa có
-                new_user_images = user_images.insert().values(user_id=user_detail.id, images=images_string)
-                session.execute(new_user_images)
+            # Tạo bản ghi mới cho hình ảnh
+            new_user_images = user_images.insert().values(user_id=user_detail.id, images=images_string)
+            session.execute(new_user_images)
 
             # Commit thay đổi để lưu vào database
             session.commit()
@@ -367,7 +373,7 @@ class EditEmployeeDialog(QDialog):
             self.parent().update_image_status(user_detail.employee_code, len(base64_images) > 0)
 
         session.close()
-        self.accept() 
+        self.accept()
 
 # class for chup anh button
 class CameraCaptureDialog(QDialog):
@@ -398,7 +404,7 @@ class CameraCaptureDialog(QDialog):
         self.layout.addWidget(self.capture_button)
 
         # Initialize webcam
-        self.cap = cv2.VideoCapture(0)
+        self.cap = cv2.VideoCapture(capture_id)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(20)
@@ -696,9 +702,6 @@ class EmployeeDashboard(QWidget):
         error_dialog.exec()
 
     def display_table(self, df):
-        # Reset index để đảm bảo các chỉ số bắt đầu từ 0 và liên tục
-        df = df.reset_index(drop=True)
-
         self.table_widget.setRowCount(len(df))
         self.table_widget.setColumnCount(len(df.columns))
         self.table_widget.setHorizontalHeaderLabels(df.columns)
@@ -718,18 +721,12 @@ class EmployeeDashboard(QWidget):
                         label.setStyleSheet("color: red;")
                     self.table_widget.setCellWidget(i, j, label)
                 elif df.columns[j] == 'Thiết lập':
-                    # Lấy Mã NV của nhân viên hiện tại
-                    emp_id = df.at[i, 'Mã NV']
-                    
-                    # Tạo nút "Chỉnh sửa"
+                    # Add "Chỉnh sửa" và "Xóa NV" buttons
                     edit_button = QPushButton('Chỉnh sửa')
                     edit_button.setStyleSheet("background-color: blue; color: white;")
                     edit_button.setFixedSize(100, 20)
-                    
-                    # Kết nối sự kiện nút "Chỉnh sửa" với Mã NV
-                    edit_button.clicked.connect(lambda checked, emp_id=emp_id: self.show_password_dialog(lambda: self.edit_employee(emp_id), row=None))
+                    edit_button.clicked.connect(lambda _, row=i: self.show_password_dialog(self.edit_employee, row))
 
-                    # Tạo layout để chứa nút
                     hbox = QHBoxLayout()
                     hbox.addWidget(edit_button)
                     hbox_widget = QWidget()
@@ -738,10 +735,9 @@ class EmployeeDashboard(QWidget):
                 else:
                     item = QTableWidgetItem(str(df.iat[i, j]))
                     if df.columns[j] in ['Mã NV', 'Tên NV', 'Phòng ban', 'Xưởng']:
-                        item.setForeground(QColor(Qt.GlobalColor.black))  # Đặt màu chữ là đen
-                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Đặt không cho chỉnh sửa
+                        item.setForeground(QColor(Qt.GlobalColor.black))  # Set text color to black
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make non-editable
                     self.table_widget.setItem(i, j, item)
-
 
     def update_image_status(self, user_id, has_images):
         for row in range(self.df.shape[0]):
@@ -766,30 +762,20 @@ class EmployeeDashboard(QWidget):
         if name_filter:
             filtered_df = filtered_df[filtered_df['Tên NV'].astype(str).str.contains(name_filter, case=False, na=False)]
 
-        # Reset index để đảm bảo các chỉ số bắt đầu từ 0 và liên tục
-        filtered_df = filtered_df.reset_index(drop=True)
-
         self.display_table(filtered_df)
 
-
-    def edit_employee(self, emp_id):
+    def edit_employee(self, row):
         if self.df is not None:
-            # Tìm hàng dữ liệu với Mã NV tương ứng
-            employee_row = self.df[self.df['Mã NV'] == emp_id]
-            if not employee_row.empty:
-                employee_data = {
-                    'Mã NV': employee_row.iloc[0]['Mã NV'],
-                    'Tên NV': employee_row.iloc[0]['Tên NV'],
-                    'Phòng ban': employee_row.iloc[0]['Phòng ban'],
-                    'Xưởng': employee_row.iloc[0]['Xưởng']
-                }
+            employee_data = {
+                'Mã NV': self.df.iloc[row]['Mã NV'],
+                'Tên NV': self.df.iloc[row]['Tên NV'],
+                'Phòng ban': self.df.iloc[row]['Phòng ban'],
+                'Xưởng': self.df.iloc[row]['Xưởng']
+            }
 
-                dialog = EditEmployeeDialog(employee_data, self.engine, self)
-                if dialog.exec():
-                    print("Thông tin đã được lưu.")
-            else:
-                self.show_error_message(f"Không tìm thấy nhân viên với Mã NV: {emp_id}")
-
+            dialog = EditEmployeeDialog(employee_data, self.engine, self)
+            if dialog.exec():
+                print("Thông tin đã được lưu.")
 
     def show_password_dialog(self, action, row):
         dialog = QDialog(self)
