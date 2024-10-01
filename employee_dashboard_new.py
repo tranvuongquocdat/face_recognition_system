@@ -9,11 +9,11 @@ import logging
 from PyQt6 import QtWidgets, QtGui
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLineEdit, QPushButton, 
-    QTableWidget, QTableWidgetItem, QHBoxLayout, QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHBoxLayout, QAbstractItemView, QProgressBar,
     QMessageBox, QLabel, QDialog, QFormLayout, QHeaderView, QSizePolicy, QFileDialog, 
 )
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QFont, QImage, QPen
-from PyQt6.QtCore import Qt, QRect, QTimer, QBuffer, QIODevice
+from PyQt6.QtCore import Qt, QRect, QTimer, QBuffer, QIODevice, QThread, pyqtSignal
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import sessionmaker
 from utils.facenet_core import Facenet
@@ -639,6 +639,25 @@ class EmployeeDashboard(QWidget):
         self.upload_button.clicked.connect(self.upload_file)
         self.top_layout.addWidget(self.upload_button, alignment=Qt.AlignmentFlag.AlignRight)
 
+        # Progress bar for data loading
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)  # Initially hidden
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid grey;
+                border-radius: 5px;
+                text-align: center;
+                background-color: #F3F3F3;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;  /* Green progress bar color */
+                width: 10px;
+            }
+        """)
+        self.main_layout.addWidget(self.progress_bar)
+
         # Add the top layout to the main layout
         self.main_layout.addLayout(self.top_layout)
 
@@ -668,7 +687,7 @@ class EmployeeDashboard(QWidget):
         # Connect search fields to filter function
         self.search_id_input.textChanged.connect(self.filter_table)
         self.search_name_input.textChanged.connect(self.filter_table)
-    
+        
     def go_home(self):
         from main import Ui_MainWindow  # Import the main window class
         self.main_window = QtWidgets.QMainWindow()
@@ -678,19 +697,28 @@ class EmployeeDashboard(QWidget):
         self.close()
 
     def upload_file(self):
-        try:
-        # Fetch data using the fetch_employee_data function
-            self.df = fetch_employee_data()
-            if self.df.empty:
-                raise ValueError("Không có dữ liệu để hiển thị")
-            self.display_table(self.df)
-        except Exception as e:
-            self.show_error_message(f"Lỗi khi tải dữ liệu: {str(e)}")
+        # Show progress bar and start data loader thread
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
 
-        Session = sessionmaker(bind=self.engine)
-        session = Session()
-        # self.display_table(self.df)
-        session.close()
+        self.loader_thread = DataLoaderThread()
+        self.loader_thread.progress_changed.connect(self.progress_bar.setValue)
+        self.loader_thread.data_loaded.connect(self.on_data_loaded)
+
+        self.loader_thread.start()
+
+    def on_data_loaded(self, df):
+        # Hide progress bar when done
+        self.progress_bar.setVisible(False)
+
+        # Display loaded data
+        self.df = df
+        if not df.empty:
+            self.display_table(self.df)
+        else:
+            self.show_error_message("Không có dữ liệu để hiển thị")
+
+    # Rest of the class remains the same...
     
     def show_error_message(self, message):
         error_dialog = QMessageBox()
@@ -813,6 +841,52 @@ class EmployeeDashboard(QWidget):
         else:
             QMessageBox.warning(self, "Sai mật khẩu", "Mật khẩu không đúng.")
             dialog.reject()
+
+class DataLoaderThread(QThread):
+    progress_changed = pyqtSignal(int)  # Signal to update progress bar
+    data_loaded = pyqtSignal(pd.DataFrame)  # Signal to pass loaded data
+    
+    def run(self):
+        total_steps = 5  # Total steps for progress bar (you can adjust this based on the real task steps)
+        
+        # Start loading data from the database
+        step = 0
+        try:
+            session = Session()
+            
+            # Simulate step-by-step data fetching process
+            self.progress_changed.emit(int((step / total_steps) * 100))  # Emit initial progress
+
+            # Fetch data from `user_details`
+            step += 1
+            user_details_data = session.query(user_details).all()
+            self.progress_changed.emit(int((step / total_steps) * 100))  # Update progress
+
+            # Fetch data from `departments`
+            step += 1
+            departments_data = session.query(departments).all()
+            self.progress_changed.emit(int((step / total_steps) * 100))
+
+            # Fetch data from `workshops`
+            step += 1
+            workshops_data = session.query(workshops).all()
+            self.progress_changed.emit(int((step / total_steps) * 100))
+
+            # Fetch images and combine data (this step may take time)
+            step += 1
+            data = fetch_employee_data()  # The actual function to fetch and process data
+            self.progress_changed.emit(int((step / total_steps) * 100))
+            
+            # Final step: Data is fully loaded
+            step += 1
+            self.progress_changed.emit(int((step / total_steps) * 100))
+
+            session.close()
+
+            # Emit the fully loaded data
+            self.data_loaded.emit(data)
+        except Exception as e:
+            print(f"Error during data loading: {e}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
