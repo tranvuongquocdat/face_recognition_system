@@ -119,29 +119,12 @@ class Ui_MainWindow(object):
             print(f"Lỗi khi khởi chạy {script_name}: {e}")
 
     def open_attendance_checking_window(self):
-        try:
-            # Kiểm tra nếu luồng check-in chưa chạy
-            if not self.checkin_thread_running:
-                # Tạo luồng để chạy attendance_tracking_in.py
-                self.checkin_thread = threading.Thread(target=self.run_script, args=("attendance_tracking_in.py",))
-                self.checkin_thread.start()
-                self.checkin_thread_running = True  # Đánh dấu luồng check-in đã chạy
-                print("Luồng check-in đã được khởi tạo.")
-
-            # Kiểm tra nếu luồng check-out chưa chạy
-            # if not self.checkout_thread_running:
-            #     # Tạo luồng để chạy attendance_tracking_out.py
-            #     self.checkout_thread = threading.Thread(target=self.run_script, args=("attendance_tracking_out.py",))
-            #     self.checkout_thread.start()
-            #     self.checkout_thread_running = True  # Đánh dấu luồng check-out đã chạy
-            #     print("Luồng check-out đã được khởi tạo.")
-
-            # Ẩn cửa sổ chính sau khi cả hai luồng đã khởi động thành công
-            print("Ẩn cửa sổ chính.")
-            self.main_window.hide()
-
-        except Exception as e:
-            print(f"Lỗi khi khởi tạo luồng: {e}")
+        from attendance_tracking_in import AttendanceCheckingWindow  # Import the EmployeeDashboard class
+        self.window = QtWidgets.QMainWindow()
+        self.ui = AttendanceCheckingWindow()
+        self.ui.setupUi(self.window)
+        self.window.showFullScreen()  # Hiển thị cửa sổ ở chế độ toàn màn hình
+        self.main_window.close()
 
     def open_employee_dashboard(self):
         from employee_dashboard_new import EmployeeDashboard  # Import the EmployeeDashboard class

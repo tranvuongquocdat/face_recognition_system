@@ -19,26 +19,31 @@ class Facenet:
         print('Running on device: {}'.format(self.device))
 
         self.mtcnn = MTCNN(image_size=160, margin=0, min_face_size=20,
-                           thresholds=[0.6, 0.7, 0.7], factor=0.709, post_process=True, keep_all=True,
-                           device=self.device)
+                        thresholds=[0.6, 0.7, 0.7], factor=0.709, post_process=True, keep_all=True,
+                        device=self.device)
 
         self.resnet = InceptionResnetV1(pretrained=self.pretrained).eval().to(self.device)
 
         if self.image_folder:
             # Load dataset
+            valid_extensions = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp')
             dataset = datasets.ImageFolder(self.image_folder)
+            
+            # Filter the dataset to include only valid image file extensions
+            dataset.samples = [(path, label) for path, label in dataset.samples if path.lower().endswith(valid_extensions)]
+            
             loader = DataLoader(dataset, collate_fn=lambda x: x[0])
 
             # Preprocess images and extract embeddings
             aligned = []
             self.names = []
-            
+
             for idx, (img, _) in enumerate(loader):
                 img_aligned, prob = self.mtcnn(img, return_prob=True)
                 if img_aligned is not None:
                     img_aligned = img_aligned[0]  # Remove any extra dimension (the second dimension)
                     aligned.append(img_aligned)
-                    
+
                     # Get relative image path in form {user_folder}/{img_file}
                     image_path = dataset.samples[idx][0]  # Access the correct image path using idx
                     relative_image_path = os.path.relpath(image_path, self.image_folder).replace("\\", "/")  # Ensure proper path format
